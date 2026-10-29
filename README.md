@@ -5,7 +5,7 @@ A personal Minecraft Java Edition launcher with a Modrinth-style look. Python + 
 ## Files
 - `launcher.py` - the launcher
 - `pvp_packs.py` - builds the PvP color texture packs
-- `sounds.py` - the creamy UI sounds
+- `sounds.py` - the UI sounds
 - `requirements.txt`
 
 Keep all three `.py` files in the same folder.
