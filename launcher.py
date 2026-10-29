@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 import pvp_packs
-from sounds import SoundPlayer
+from sounds import CUSTOM_FILE, SoundPlayer, import_click_sound, reset_click_sound
 
 APP_DIR = Path.home() / ".simple_mc_launcher"
 CONFIG_FILE = APP_DIR / "config.json"
@@ -196,6 +196,7 @@ DEFAULT_CONFIG = {
     "use_fabric": False,
     "demo": False,
     "sounds": True,
+    "click_sound_name": None,
     "pvp_pack": "none",
     "theme": dict(DEFAULT_THEME),
     "account": None,  # {"name","id","refresh_token"}
@@ -874,9 +875,52 @@ class Launcher(QMainWindow):
         self.sound_cb.setChecked(self.cfg["sounds"])
         self.sound_cb.toggled.connect(lambda _: self._save_settings())
         g.addWidget(self.sound_cb, 5, 1, 1, 2)
+
+        g.addWidget(label("Click sound", "h2"), 6, 0)
+        crow = QHBoxLayout()
+        self.click_lbl = QLabel()
+        crow.addWidget(self.click_lbl, 1)
+        pick = QPushButton("Choose file...")
+        pick.clicked.connect(self._choose_click_sound)
+        crow.addWidget(pick)
+        rst = QPushButton("Reset")
+        rst.setProperty("ghost", True)
+        rst.clicked.connect(self._reset_click_sound)
+        crow.addWidget(rst)
+        g.addLayout(crow, 6, 1, 1, 2)
+        g.addWidget(label("Use your own sound (wav, mp3, ogg, flac) for button clicks. "
+                          "Stored on your PC only.", "muted"), 7, 1, 1, 2)
+        self._refresh_click_label()
         lay.addWidget(c)
         lay.addStretch(1)
         return page
+
+    def _refresh_click_label(self):
+        name = self.cfg.get("click_sound_name") if CUSTOM_FILE.exists() else None
+        self.click_lbl.setText(name or "Creamy (default)")
+
+    def _choose_click_sound(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a click sound", str(Path.home() / "Downloads"),
+                                              "Sounds (*.wav *.mp3 *.ogg *.flac)")
+        if not path:
+            return
+        try:
+            import_click_sound(path)
+        except RuntimeError as e:
+            self.sfx.play("error")
+            QMessageBox.warning(self, "Couldn't use that sound", str(e))
+            return
+        self.cfg["click_sound_name"] = Path(path).name
+        save_config(self.cfg)
+        self._refresh_click_label()
+        self.sfx.play("click")  # preview
+
+    def _reset_click_sound(self):
+        reset_click_sound()
+        self.cfg["click_sound_name"] = None
+        save_config(self.cfg)
+        self._refresh_click_label()
+        self.sfx.play("click")
 
     def _ram_changed(self):
         self.ram_lbl.setText(f"{self.ram_slider.value() * 512 / 1024:.1f} GB")

@@ -1,3 +1,4 @@
 minecraft-launcher-lib>=6.0
 Pillow>=10.0
 PySide6-Essentials>=6.6
+miniaudio>=1.60

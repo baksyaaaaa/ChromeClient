@@ -1,4 +1,4 @@
-# Simple MC Launcher
+# Chrome Client
 
 A personal Minecraft Java Edition launcher with a Modrinth-style look. Python + PySide6 (Qt).
 
@@ -24,7 +24,8 @@ You need Java installed.
 - **Appearance** - recolor everything: background, cards/sidebar, accent and text. Presets
   (Classic, Green, Pink, Blue, Orange, Red, Purple) or pick any color / paste a hex code.
   Applies instantly and is remembered.
-- **Settings** - RAM slider, game folder, Azure client ID, demo mode, UI sounds
+- **Settings** - RAM slider, game folder, Azure client ID, demo mode, UI sounds, and a custom click sound
+  (pick any wav/mp3/ogg/flac; it's kept on your PC only and never uploaded with the project)
 - Sign in with Microsoft from the bottom-left of the sidebar
 
 ## Sign in (one-time setup)
