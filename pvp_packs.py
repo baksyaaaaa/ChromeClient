@@ -1,5 +1,5 @@
 """
-PvP color resource packs for Simple MC Launcher.
+PvP color resource packs for Chrome Client.
 
 Instead of shipping Mojang's textures, this builds each pack on your machine
 from the Minecraft jar you already have installed: it recolors the textures it
@@ -18,17 +18,30 @@ import fnmatch
 import io
 import json
 import os
+import random
 import sys
 import zipfile
 from pathlib import Path
 
-BUILD = "1"  # bump this to force packs to rebuild
-PACK_PREFIX = "SimpleMC PvP "
-STAMP_FILE = "simplemc_stamp.txt"
+BUILD = "4"  # bump this to force packs to rebuild
+PACK_PREFIX = "Chrome Client PvP "
+LEGACY_PREFIXES = ("SimpleMC PvP ",)  # the old name: those packs are cleaned up automatically
+STAMP_FILE = "chromeclient_stamp.txt"
 TEX = "assets/minecraft/textures/"
 
 # hue in degrees
-COLORS = {"pink": 328, "green": 125, "blue": 212, "orange": 28, "red": 0}
+COLORS = {"pink": 328, "green": 125, "blue": 212, "orange": 28, "cherry blossom": 345}
+# the colored dot shown for each pack in the launcher
+SWATCH = {"pink": "#ff4db0", "green": "#4dff5a", "blue": "#4d95ff", "orange": "#ff9a3d", "cherry blossom": "#ffc2d1"}
+
+# Cherry Blossom is a different style, not just another hue: soft pastel colors plus little petals
+# scattered over the textures. How many petals per 16x16 pixels on each kind of texture:
+CHERRY = "cherry blossom"
+PETALS = {"obsidian": 7, "respawn anchor": 5, "glowstone": 5, "end crystal": 2,
+          "totem / pearl / gapples": 2, "clouds": 3, "end sky": 3}
+PETAL_COLORS = [(255, 244, 248), (255, 214, 226), (255, 183, 205), (248, 150, 182)]
+PETAL_SHAPES = [[(0, 0), (1, 0), (0, 1)], [(0, 0), (1, 0), (1, 1)], [(0, 0), (0, 1), (1, 1)],
+                [(1, 0), (0, 1), (1, 1)], [(0, 0), (1, 0)], [(0, 0), (0, 1)]]
 
 # (label, patterns relative to assets/minecraft/textures/, recolor settings)
 #   s_floor  - minimum saturation (so grey/black textures actually pick up color)
@@ -49,7 +62,15 @@ RULES = [
     ("clouds", ["environment/clouds.png"], dict(s_floor=0.35)),
     ("end sky", ["environment/end_sky.png"], dict(s_floor=0.6, v_mul=1.1)),
     ("crosshair", ["gui/sprites/hud/crosshair*.png"], dict(s_floor=0.9, colorize=True)),
+    ("hotbar / xp bar", ["gui/sprites/hud/hotbar_selection.png", "gui/sprites/hud/experience_bar_progress.png"],
+     dict(s_floor=0.45)),
+    ("hit particles", ["particle/critical_hit.png", "particle/enchanted_hit.png", "particle/damage.png"],
+     dict(s_floor=0.6)),
 ]
+# Cherry Blossom only: every oak/jungle/acacia/dark oak/mangrove leaf in the world turns blossom pink
+# (vanilla reads leaf colors from this colormap, so no mod is needed)
+CHERRY_EXTRA = [("pink leaves", ["colormap/foliage.png"], dict(s_floor=0.16, s_mul=0.42, v_mul=1.15, v_add=0.12))]
+PETALS["hit particles"] = 0
 
 
 def _pil():
@@ -75,6 +96,47 @@ def recolor(img, hue_deg, s_floor=0.0, s_mul=1.0, v_mul=1.0, v_add=0.0, colorize
     v = v.point([min(255, max(0, int(i * v_mul + v_add * 255))) for i in range(256)])
     rr, gg, bb = Image.merge("HSV", (h, s, v)).convert("RGB").split()
     return Image.merge("RGBA", (rr, gg, bb, a))
+
+
+def add_petals(img, seed, per_16=5):
+    """Scatter small cherry petals over a texture (only on opaque pixels, alpha is kept)."""
+    img = img.convert("RGBA")
+    w, h = img.size
+    px = img.load()
+    rng = random.Random(seed)
+    big = max(1, min(w, h) // 64)  # on huge textures (clouds) petals are drawn bigger
+    for _ in range(max(1, min(500, int(per_16 * w * h / 256)))):
+        x, y = rng.randrange(w), rng.randrange(h)
+        col = rng.choice(PETAL_COLORS)
+        for dx, dy in rng.choice(PETAL_SHAPES):
+            for ox in range(big):
+                for oy in range(big):
+                    xx, yy = x + dx * big + ox, y + dy * big + oy
+                    if xx < w and yy < h and px[xx, yy][3] > 40:
+                        px[xx, yy] = col + (px[xx, yy][3],)
+    return img
+
+
+def cherry_crosshair(img):
+    """Soft pink crosshair with four tiny petals in the corners (the middle stays clear)."""
+    img = img.convert("RGBA")
+    w, h = img.size
+    px = img.load()
+    for cx, cy in ((w // 4, h // 4), (w - 1 - w // 4, h // 4), (w // 4, h - 1 - h // 4), (w - 1 - w // 4, h - 1 - h // 4)):
+        for dx, dy, col in ((0, 0, (255, 183, 205)), (1, 0, (255, 230, 238)), (0, 1, (255, 230, 238))):
+            x, y = cx + dx, cy + dy
+            if 0 <= x < w and 0 <= y < h and px[x, y][3] == 0:
+                px[x, y] = col + (230,)
+    return img
+
+
+def _soften(params):
+    """Pastel version of a rule's recolor settings (used for Cherry Blossom)."""
+    p = dict(params)
+    p["s_floor"] = p.get("s_floor", 0.0) * 0.5
+    p["v_mul"] = p.get("v_mul", 1.0) * 1.05
+    p["v_add"] = p.get("v_add", 0.0) + 0.07
+    return p
 
 
 def _png_bytes(img):
@@ -103,7 +165,8 @@ def _resource_format(zf):
 
 
 def _pack_mcmeta(fmt, color):
-    desc = f"SimpleMC PvP - {color.title()}"
+    desc = (f"\u00a7dCherry Blossom \u00a78| \u00a77Chrome Client PvP \u00a7f- petals, pink leaves, pastel PvP"
+            if color == CHERRY else f"Chrome Client PvP - {color.title()}")
     if fmt <= 65:  # old style (1.21.8 and older)
         pack = {"pack_format": fmt, "description": desc}
     else:          # 1.21.9+ uses a min/max range
@@ -111,8 +174,61 @@ def _pack_mcmeta(fmt, color):
     return json.dumps({"pack": pack}, indent=2)
 
 
-def _pack_icon(hue):
+def _pack_icon(hue, cherry=False):
     Image, ImageDraw = _pil()
+    if cherry:  # a detailed sakura blossom on a dusk-rose gradient, drawn big then shrunk for smooth edges
+        import math
+        S = 512
+        bg = Image.new("RGB", (S, S))
+        bp = bg.load()
+        top, bot = (58, 24, 52), (176, 78, 118)
+        for y in range(S):
+            t = y / (S - 1)
+            row = tuple(int(top[i] + (bot[i] - top[i]) * t) for i in range(3))
+            for x in range(S):
+                bp[x, y] = row
+        rng = random.Random(7)
+
+        def petal(size, rot, fill, notch=True):
+            """One heart-tipped petal as an RGBA layer, pointing up from the centre, then rotated."""
+            L = Image.new("RGBA", (size * 2, size * 2), (0, 0, 0, 0))
+            d = ImageDraw.Draw(L)
+            cx, cy = size, size
+            pw, ph = size * 0.50, size * 0.95
+            d.ellipse([cx - pw, cy - ph, cx + pw, cy + ph * 0.15], fill=fill)
+            if notch:  # the little V cut at the tip of a cherry petal
+                d.polygon([(cx - pw * 0.16, cy - ph - 2), (cx + pw * 0.16, cy - ph - 2), (cx, cy - ph * 0.80)], fill=(0, 0, 0, 0))
+            # soft darker vein from the base up the middle
+            d.line([(cx, cy), (cx, cy - ph * 0.62)], fill=(236, 128, 166, 255), width=max(2, size // 38))
+            return L.rotate(rot, resample=Image.BICUBIC, center=(cx, cy))
+
+        def paste_center(base, layer, x, y):
+            base.alpha_composite(layer, (int(x - layer.width / 2), int(y - layer.height / 2)))
+
+        canvas = bg.convert("RGBA")
+        # little drifting petals in the background
+        for _ in range(14):
+            x, y = rng.randrange(20, S - 20), rng.randrange(20, S - 20)
+            if math.hypot(x - S / 2, y - S / 2) < 190:
+                continue
+            sz = rng.randrange(14, 30)
+            paste_center(canvas, petal(sz, rng.randrange(360), (255, 205, 222, 200), notch=False), x, y)
+        # the blossom: five petals, a lighter inner glow, then stamens
+        for k in range(5):
+            ang = k * 72
+            lay = petal(200, -ang, (255, 196, 214, 255))
+            paste_center(canvas, lay, S / 2, S / 2)
+        glow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        ImageDraw.Draw(glow).ellipse([S / 2 - 80, S / 2 - 80, S / 2 + 80, S / 2 + 80], fill=(255, 236, 244, 230))
+        canvas.alpha_composite(glow)
+        d = ImageDraw.Draw(canvas)
+        for k in range(10):
+            a = math.radians(k * 36 + 9)
+            ex, ey = S / 2 + 74 * math.cos(a), S / 2 + 74 * math.sin(a)
+            d.line([(S / 2, S / 2), (ex, ey)], fill=(214, 84, 134, 255), width=5)
+            d.ellipse([ex - 8, ey - 8, ex + 8, ey + 8], fill=(255, 212, 120, 255))
+        d.ellipse([S / 2 - 16, S / 2 - 16, S / 2 + 16, S / 2 + 16], fill=(214, 84, 134, 255))
+        return _png_bytes(canvas.convert("RGB").resize((128, 128), Image.LANCZOS))
     base = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(hue / 360, 0.75, 0.55))
     light = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(hue / 360, 0.55, 1.0))
     im = Image.new("RGB", (128, 128), base)
@@ -152,13 +268,22 @@ def build_pack(mc_dir, version, color, out_dir=None):
         if fmt is None:
             raise RuntimeError("Couldn't read the pack format from this version's jar.")
 
-        for label, patterns, params in RULES:
+        cherry = color == CHERRY
+        for label, patterns, params in (RULES + CHERRY_EXTRA if cherry else RULES):
+            if cherry:
+                params = _soften(params)
             hit = False
             for pat in patterns:
                 for n in names:
                     if not n.endswith(".png") or n in out or not fnmatch.fnmatch(n, TEX + pat):
                         continue
-                    out[n] = _png_bytes(recolor(Image.open(io.BytesIO(zf.read(n))), hue, **params))
+                    img = recolor(Image.open(io.BytesIO(zf.read(n))), hue, **params)
+                    if cherry:
+                        if label == "crosshair":
+                            img = cherry_crosshair(img)
+                        elif PETALS.get(label) and not n.endswith("_beam.png"):
+                            img = add_petals(img, n, PETALS[label])
+                    out[n] = _png_bytes(img)
                     if n + ".mcmeta" in names:  # keep animations (fire, etc.)
                         out[n + ".mcmeta"] = zf.read(n + ".mcmeta")
                     hit = True
@@ -178,13 +303,14 @@ def build_pack(mc_dir, version, color, out_dir=None):
 
     # Overworld sky/fog color: vanilla can't do this from a resource pack, but
     # OptiFine-style colormaps are picked up by OptiFine / Colormatic-type mods.
-    sky = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(hue / 360, 0.60, 0.95))
-    fog = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(hue / 360, 0.35, 1.0))
+    sat = 0.30 if color == CHERRY else 0.60
+    sky = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(hue / 360, sat, 0.95))
+    fog = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(hue / 360, sat * 0.6, 1.0))
     out["assets/minecraft/optifine/colormap/sky0.png"] = _png_bytes(Image.new("RGB", (256, 256), sky))
     out["assets/minecraft/optifine/colormap/fog0.png"] = _png_bytes(Image.new("RGB", (256, 256), fog))
 
     out["pack.mcmeta"] = _pack_mcmeta(fmt, color).encode()
-    out["pack.png"] = _pack_icon(hue)
+    out["pack.png"] = _pack_icon(hue, color == CHERRY)
     out[STAMP_FILE] = f"{BUILD}|{version}|{color}|{jar_mtime}".encode()
 
     tmp = dest.with_name(dest.name + ".tmp")
@@ -209,7 +335,7 @@ def set_active_pack(mc_dir, zip_name):
     Any other packs you have enabled are left alone."""
     opt = Path(mc_dir) / "options.txt"
     lines = opt.read_text(encoding="utf-8").splitlines() if opt.exists() else []
-    ours = f"file/{PACK_PREFIX}"
+    ours = tuple(f"file/{p}" for p in (PACK_PREFIX,) + LEGACY_PREFIXES)
     entry = f"file/{zip_name}" if zip_name else None
 
     def edit(key, add):
@@ -236,23 +362,63 @@ def set_active_pack(mc_dir, zip_name):
 
 
 def apply_pack(mc_dir, version, color):
-    """Used by the launcher right before launch. Returns a status string."""
-    if not color or color.lower() == "none":
-        set_active_pack(mc_dir, None)
-        return "PvP pack: off"
-    color = color.lower()
-    dest = Path(mc_dir) / "resourcepacks" / pack_name(color)
-    note = ""
-    if not (dest.exists() and _is_current(dest, version, color)):
+    """Used by the launcher right before launch. Returns a status string.
+
+    Builds ALL the color packs (only the ones that are missing or out of date), so
+    you can swap between them in game - with the Chrome Client mod's menu (press O)
+    or the normal Options -> Resource Packs screen. Only the chosen one is switched on."""
+    color = (color or "none").lower()
+    packs_dir = Path(mc_dir) / "resourcepacks"
+    built, failed = 0, {}
+    # remove packs of colors that no longer exist (like the old Red one)
+    keep = {pack_name(c) for c in COLORS}
+    if packs_dir.is_dir():
+        for prefix in (PACK_PREFIX,) + LEGACY_PREFIXES:  # also removes the old "SimpleMC PvP ..." zips
+            for old in packs_dir.glob(f"{prefix}*.zip"):
+                if old.name not in keep:
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+    for c in COLORS:
+        dest = packs_dir / pack_name(c)
+        if dest.exists() and _is_current(dest, version, c):
+            continue
         try:
-            dest, changed, missing = build_pack(mc_dir, version, color)
-            note = f" ({changed} textures"
-            note += f", not found: {', '.join(missing)})" if missing else ")"
-        except PermissionError:
-            if not dest.exists():  # locked by a running game and nothing to fall back on
-                raise
+            build_pack(mc_dir, version, c)
+            built += 1
+        except Exception as e:  # e.g. file locked by a running game; keep going
+            failed[c] = e
+    if color == "none":
+        set_active_pack(mc_dir, None)
+        return "PvP pack: off" + (f" ({built} packs ready for the in-game menu)" if built else "")
+    if color not in COLORS:
+        set_active_pack(mc_dir, None)  # e.g. 'red' from an older version: switch the pack off
+        return f"PvP pack '{color}' no longer exists - pick another on the Play page"
+    dest = packs_dir / pack_name(color)
+    if not dest.exists():
+        raise failed.get(color) or RuntimeError("Couldn't build the pack.")
     set_active_pack(mc_dir, dest.name)
-    return f"PvP {color.title()} pack on{note}"
+    return f"PvP {color.title()} pack on" + (f" ({built} packs built)" if built else "")
+
+
+def remove_all(mc_dir):
+    """Delete every pack this launcher ever generated and switch them off. Returns how many were removed."""
+    packs_dir = Path(mc_dir) / "resourcepacks"
+    n = 0
+    try:
+        set_active_pack(mc_dir, None)
+    except Exception:
+        pass
+    if packs_dir.is_dir():
+        for prefix in (PACK_PREFIX,) + LEGACY_PREFIXES:
+            for old in packs_dir.glob(f"{prefix}*.zip"):
+                try:
+                    old.unlink()
+                    n += 1
+                except OSError:
+                    pass
+    return n
 
 
 if __name__ == "__main__":
